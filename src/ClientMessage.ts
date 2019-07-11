@@ -64,6 +64,10 @@ class ClientMessage {
         return message;
     }
 
+    getNumberOfBackupAcks(): number {
+        return this.buffer.readInt16LE(BitsUtil.BACKUP_ACKS_FIELD_OFFSET);
+    }
+
     getBuffer(): Buffer {
         return this.buffer;
     }

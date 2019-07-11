@@ -105,6 +105,9 @@ export default class HazelcastClient {
         this.clusterService = new ClusterService(this);
         this.lifecycleService = new LifecycleService(this);
         this.heartbeat = new Heartbeat(this);
+        if (this.config.networkConfig.smartRouting) {
+            this.invocationService.addBackupListener();
+        }
         this.lockReferenceIdGenerator = new LockReferenceIdGenerator();
         this.errorFactory = new ClientErrorFactory();
         this.statistics = new Statistics(this);

@@ -16,12 +16,13 @@
 
 import {Buffer} from 'safe-buffer';
 import * as assert from 'assert';
+import {AssertionError} from 'assert';
 import * as Promise from 'bluebird';
 import * as Long from 'long';
 import {BitsUtil} from '../BitsUtil';
 import HazelcastClient from '../HazelcastClient';
 import {
-    ClientNotActiveError,
+    ClientNotActiveError, HazelcastError,
     HazelcastInstanceNotActiveError,
     InvocationTimeoutError,
     IOError,
@@ -30,6 +31,8 @@ import {
 import {ClientConnection} from './ClientConnection';
 import {DeferredPromise} from '../Util';
 import {ILogger} from '../logging/ILogger';
+import {ListenerMessageCodec} from '../ListenerMessageCodec';
+import {ClientLocalBackupListenerCodec} from '../codec/ClientLocalBackupListenerCodec';
 import Address = require('../Address');
 import ClientMessage = require('../ClientMessage');
 
@@ -76,6 +79,14 @@ export class Invocation {
      */
     handler: (...args: any[]) => any;
 
+    backupsAcksReceived: number = 0;
+
+    pendingResponseMessage: ClientMessage;
+
+    backupsAcksExpected: number = -1;
+
+    pendingResponseReceivedMillis: number = -1;
+
     constructor(client: HazelcastClient, request: ClientMessage) {
         this.client = client;
         this.invocationService = client.getInvocationService();
@@ -97,13 +108,95 @@ export class Invocation {
     isAllowedToRetryOnSelection(err: Error): boolean {
         return (this.connection == null && this.address == null) || !(err instanceof IOError);
     }
+
+    notifyBackup(): void {
+        const newBackupAcksCompleted = ++this.backupsAcksReceived;
+        const pendingResponse = this.pendingResponseMessage;
+
+        if (pendingResponse === null) {
+            return;
+        }
+
+        const backupAcksExpected = this.backupsAcksExpected;
+
+        if (backupAcksExpected < newBackupAcksCompleted) {
+            return;
+        }
+
+        if (backupAcksExpected !== newBackupAcksCompleted) {
+            return;
+        }
+        this.complete(pendingResponse);
+    }
+
+    notify(clientMessage: ClientMessage): void {
+        if (clientMessage === null) {
+            // @ts-ignore
+            this.invocationService.notifyError(this, new AssertionError({
+                message: 'response can\'t be null',
+            }));
+        }
+        const expectedBackups = clientMessage.getNumberOfBackupAcks();
+
+        if (expectedBackups > this.backupsAcksReceived) {
+            this.pendingResponseReceivedMillis = Date.now();
+            this.backupsAcksExpected = expectedBackups;
+            this.pendingResponseMessage = clientMessage;
+            if (this.backupsAcksReceived !== expectedBackups) {
+                return;
+            }
+        }
+        this.complete(clientMessage);
+    }
+
+    complete(obj: any): void {
+        this.deferred.resolve(obj);
+        this.invocationService.deRegisterInvocation(this.request.getCorrelationId().toNumber());
+    }
+
+    detectAndHandleBackupTimeout(timeoutMillis: number): boolean {
+        const backupsCompleted = this.backupsAcksExpected === this.backupsAcksReceived;
+        const responseReceivedMillis = this.pendingResponseReceivedMillis;
+        const expirationTime = responseReceivedMillis + timeoutMillis;
+        const timeout = expirationTime > 0 && expirationTime < Date.now();
+        const responseReceived = this.pendingResponseMessage != null;
+
+        if (backupsCompleted || !responseReceived || !timeout) {
+            return false;
+        }
+
+        if (this.shouldFailOnIndeterminateOperationState()) {
+            this.complete(new HazelcastError(this + ' failed because backup acks missed.'));
+            return true;
+        }
+        this.complete(this.pendingResponseMessage);
+        return true;
+    }
+
+    private shouldFailOnIndeterminateOperationState(): boolean {
+        return this.invocationService.shouldFailOnIndeterminateOperationState;
+    }
 }
 
 /**
  * Sends requests to appropriate nodes. Resolves waiting promises with responses.
  */
 export class InvocationService {
+    static backupListener: ListenerMessageCodec = {
+        encodeAddRequest(localOnly: boolean): ClientMessage {
+            return ClientLocalBackupListenerCodec.encodeRequest();
+        },
+        decodeAddResponse(msg: ClientMessage): string {
+            return ClientLocalBackupListenerCodec.decodeResponse(msg).response;
+        },
+        encodeRemoveRequest(listenerId: string): ClientMessage {
+            return null;
+        },
+    };
+
     doInvoke: (invocation: Invocation) => void;
+    operationBackupTimeoutMillis: number;
+    shouldFailOnIndeterminateOperationState: boolean;
     private correlationCounter = 1;
     private eventHandlers: { [id: number]: Invocation } = {};
     private pending: { [id: number]: Invocation } = {};
@@ -126,10 +219,28 @@ export class InvocationService {
         this.invocationRetryPauseMillis = this.client.getConfig().properties[PROPERTY_INVOCATION_RETRY_PAUSE_MILLIS] as number;
         this.invocationTimeoutMillis = this.client.getConfig().properties[PROPERTY_INVOCATION_TIMEOUT_MILLIS] as number;
         this.isShutdown = false;
+        this.operationBackupTimeoutMillis = this.client.getConfig()
+            .properties['hazelcast.client.operation.backup.timeout.millis'] as number;
+        this.shouldFailOnIndeterminateOperationState = this.client.getConfig()
+            .properties['hazelcast.client.operation.fail.on.indeterminate.state'] as boolean;
     }
 
     shutdown(): void {
         this.isShutdown = true;
+    }
+
+    addBackupListener(): void {
+        const listenerService = this.client.getListenerService();
+        listenerService.registerListener(InvocationService.backupListener, this.backupEventHandler);
+    }
+
+    backupEventHandler(correlationId: number): void {
+        const invocation = this.pending[correlationId];
+        if (invocation === null) {
+            this.logger.trace('InvocationService', 'Invocation not found for backup event, invocation id ' + correlationId);
+            return;
+        }
+        invocation.notifyBackup();
     }
 
     invoke(invocation: Invocation): Promise<ClientMessage> {
@@ -209,16 +320,8 @@ export class InvocationService {
         }
     }
 
-    /**
-     * Extract codec specific properties in a protocol message and resolves waiting promise.
-     * @param buffer
-     */
-    processResponse(buffer: Buffer): void {
-        const clientMessage = new ClientMessage(buffer);
-        const correlationId = clientMessage.getCorrelationId().toNumber();
-        const messageType = clientMessage.getMessageType();
-
-        if (clientMessage.hasFlags(BitsUtil.LISTENER_FLAG)) {
+    handleResponse(clientMessage: ClientMessage): void {
+        if (clientMessage.hasFlags(BitsUtil.BACKUP_EVENT_FLAG)) {
             setImmediate(() => {
                 if (this.eventHandlers[correlationId] !== undefined) {
                     this.eventHandlers[correlationId].handler(clientMessage);
@@ -226,15 +329,55 @@ export class InvocationService {
             });
             return;
         }
-
+        const correlationId = clientMessage.getCorrelationId().toNumber();
+        const messageType = clientMessage.getMessageType();
         const pendingInvocation = this.pending[correlationId];
-        const deferred = pendingInvocation.deferred;
         if (messageType === EXCEPTION_MESSAGE_TYPE) {
             const remoteError = this.client.getErrorFactory().createErrorFromClientMessage(clientMessage);
             this.notifyError(pendingInvocation, remoteError);
         } else {
-            delete this.pending[correlationId];
-            deferred.resolve(clientMessage);
+            pendingInvocation.notify(clientMessage);
+        }
+    }
+
+    /**
+     * Extract codec specific properties in a protocol message and resolves waiting promise.
+     * @param buffer
+     */
+    processResponse(buffer: Buffer): void {
+        const clientMessage = new ClientMessage(buffer);
+        const correlationId = clientMessage.getCorrelationId().toNumber();
+
+        if (clientMessage.hasFlags(BitsUtil.BACKUP_EVENT_FLAG)) {
+            this.handleResponse(clientMessage);
+        } else if (clientMessage.hasFlags(BitsUtil.LISTENER_FLAG)) {
+            setImmediate(() => {
+                if (this.eventHandlers[correlationId] !== undefined) {
+                    this.eventHandlers[correlationId].handler(clientMessage);
+                }
+            });
+            return;
+        } else {
+            this.handleResponse(clientMessage);
+        }
+    }
+
+    deRegisterInvocation(correlationId: number): void {
+        delete this.pending[correlationId];
+    }
+
+    notifyError(invocation: Invocation, error: Error): void {
+        const correlationId = invocation.request.getCorrelationId().toNumber();
+        if (this.rejectIfNotRetryable(invocation, error)) {
+            delete this.pending[invocation.request.getCorrelationId().toNumber()];
+            return;
+        }
+        this.logger.debug('InvocationService',
+            'Retrying(' + invocation.invokeCount + ') on correlation-id=' + correlationId, error);
+        if (invocation.invokeCount < MAX_FAST_INVOCATION_COUNT) {
+            this.doInvoke(invocation);
+        } else {
+            setTimeout(this.doInvoke.bind(this, invocation), this.getInvocationRetryPauseMillis());
         }
     }
 
@@ -300,27 +443,13 @@ export class InvocationService {
         if (this.isShutdown) {
             return Promise.reject(new ClientNotActiveError('Client is shutdown.'));
         }
+        invocation.request.addFlag(BitsUtil.BACKUP_AWARE_FLAG);
         this.registerInvocation(invocation);
         return this.write(invocation, connection);
     }
 
     private write(invocation: Invocation, connection: ClientConnection): Promise<void> {
         return connection.write(invocation.request.getBuffer());
-    }
-
-    private notifyError(invocation: Invocation, error: Error): void {
-        const correlationId = invocation.request.getCorrelationId().toNumber();
-        if (this.rejectIfNotRetryable(invocation, error)) {
-            delete this.pending[invocation.request.getCorrelationId().toNumber()];
-            return;
-        }
-        this.logger.debug('InvocationService',
-            'Retrying(' + invocation.invokeCount + ') on correlation-id=' + correlationId, error);
-        if (invocation.invokeCount < MAX_FAST_INVOCATION_COUNT) {
-            this.doInvoke(invocation);
-        } else {
-            setTimeout(this.doInvoke.bind(this, invocation), this.getInvocationRetryPauseMillis());
-        }
     }
 
     /**
@@ -363,4 +492,5 @@ export class InvocationService {
         }
         this.pending[correlationId] = invocation;
     }
+
 }

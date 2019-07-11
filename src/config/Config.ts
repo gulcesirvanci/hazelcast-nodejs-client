@@ -51,6 +51,8 @@ export class ClientConfig {
         'hazelcast.invalidation.max.tolerated.miss.count': 10,
         'hazelcast.invalidation.min.reconciliation.interval.seconds': 30,
         'hazelcast.logging.level': LogLevel.INFO,
+        'hazelcast.client.operation.backup.timeout.millis': 5000,
+        'hazelcast.client.operation.fail.on.indeterminate.state': false,
     };
 
     /**

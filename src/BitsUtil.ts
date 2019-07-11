@@ -38,6 +38,7 @@ export class BitsUtil {
     static EVENT_IMAPINVALIDATION = 215;
     static EVENT_IMAPBATCHINVALIDATION = 216;
     static EVENT_PARTITIONS = 217;
+    static EVENT_BACKUP = 218;
 
     static BYTE_SIZE_IN_BYTES: number = 1;
     static BOOLEAN_SIZE_IN_BYTES: number = 1;
@@ -56,6 +57,8 @@ export class BitsUtil {
     static END_FLAG: number = 0x40;
     static BEGIN_END_FLAG: number = BitsUtil.BEGIN_FLAG | BitsUtil.END_FLAG;
     static LISTENER_FLAG: number = 0x01;
+    static BACKUP_AWARE_FLAG: number = 0x02;
+    static BACKUP_EVENT_FLAG = 0x04;
 
     static NULL_ARRAY_LENGTH: number = -1;
 
@@ -68,8 +71,9 @@ export class BitsUtil {
     static CORRELATION_ID_FIELD_OFFSET: number = BitsUtil.TYPE_FIELD_OFFSET + BitsUtil.SHORT_SIZE_IN_BYTES;
     static PARTITION_ID_FIELD_OFFSET: number = BitsUtil.CORRELATION_ID_FIELD_OFFSET + BitsUtil.LONG_SIZE_IN_BYTES;
     static DATA_OFFSET_FIELD_OFFSET: number = BitsUtil.PARTITION_ID_FIELD_OFFSET + BitsUtil.INT_SIZE_IN_BYTES;
+    static BACKUP_ACKS_FIELD_OFFSET: number = BitsUtil.DATA_OFFSET_FIELD_OFFSET + BitsUtil.SHORT_SIZE_IN_BYTES;
 
-    static HEADER_SIZE: number = BitsUtil.DATA_OFFSET_FIELD_OFFSET + BitsUtil.SHORT_SIZE_IN_BYTES;
+    static HEADER_SIZE: number = BitsUtil.BACKUP_ACKS_FIELD_OFFSET + BitsUtil.SHORT_SIZE_IN_BYTES;
 
     static calculateSizeData(data: Data): number {
         return BitsUtil.INT_SIZE_IN_BYTES + data.totalSize();
