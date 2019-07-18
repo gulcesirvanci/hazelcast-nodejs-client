@@ -86,7 +86,7 @@ describe('MapProxy', function () {
             function _generateLockScript(mapName, keyName) {
                 return 'function lockByServer() {' +
                     '   var map = instance_0.getMap("' + mapName + '");' +
-                    '   map.lock(' + keyName + ');' +
+                    'mapmap.lock(' + keyName + ');' +
                     '   return map.isLocked(' + keyName + ');' +
                     '}' +
                     'result=""+lockByServer();';
@@ -95,7 +95,7 @@ describe('MapProxy', function () {
             function _generateUnlockScript(mapName, keyName) {
                 return 'function lockByServer() {' +
                     '   var map = instance_0.getMap("' + mapName + '");' +
-                    '   map.unlock(' + keyName + ');' +
+                    'mapmap.unlock(' + keyName + ');' +
                     '   return map.isLocked(' + keyName + ');' +
                     '}' +
                     'result=""+lockByServer();';
@@ -321,7 +321,7 @@ describe('MapProxy', function () {
                 var script =
                     'function lockByServer() {' +
                     '   var map = instance_0.getMap("' + map.getName() + '");' +
-                    '   map.lock("key0");' +
+                    'mapmap.lock("key0");' +
                     '   return map.isLocked("key0")' +
                     '}' +
                     'result=""+lockByServer();';

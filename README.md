@@ -27,6 +27,7 @@
 * [4. Serialization](#4-serialization)
   * [4.1. IdentifiedDataSerializable Serialization](#41-identifieddataserializable-serialization)
   * [4.2. Portable Serialization](#42-portable-serialization)
+	* [4.2.1. Versioning for Portable Serialization](#421-multiversion-portable-serialization)
   * [4.3. Custom Serialization](#43-custom-serialization)
   * [4.4. Global Serialization](#44-global-serialization)
   * [4.5. JSON Serialization](#45-json-serialization)
@@ -854,36 +855,34 @@ With multiversion support, you can have two members where each of them having di
 
 Also note that portable serialization is totally language independent and is used as the binary protocol between Hazelcast server and clients.
 
-A sample portable implementation of a `Customer` class looks like the following:
+A sample portable implementation of a `Foo` class looks like the following:
 
 ```javascript
-function Customer(name, id, lastOrder) {
-    this.name = name;
-    this.id = id;
-    this.lastOrder = lastOrder;
-    this.classId = 1;
-}
-
-Customer.prototype.readPortable = function (reader) {
-    this.name = reader.readUTF('name');
-    this.id = reader.readInt('id');
-    this.lastOrder = reader.readLong('lastOrder').toNumber();
+function Foo(foo,foo2) {
+	this.foo=foo;
 };
 
-Customer.prototype.writePortable = function (writer) {
-    writer.writeUTF('name', this.name);
-    writer.writeInt('id', this.id);
-    writer.writeLong('lastOrder', Long.fromNumber(this.lastOrder));
+Foo.prototype.getFactoryId = function () {
+    return 1;
 };
 
-Customer.prototype.getFactoryId = function () {
-    return PortableFactory.factoryId;
+Foo.prototype.getClassId = function () {
+    return 1;
 };
 
-Customer.prototype.getClassId = function () {
-    return this.classId;
+Foo.prototype.getVersion = function () { //*
+    return 1;
 };
-```
+
+Foo.prototype.readPortable = function (reader) {
+    this.foo = reader.readUTF('foo');
+};
+
+Foo.prototype.writePortable = function (writer) {
+    writer.writeUTF('foo', this.foo);
+};
+	
+	```
 
 Similar to `IdentifiedDataSerializable`, a `Portable` object must provide `classId` and `factoryId`. The factory object will be used to create the `Portable` object given the `classId`.
 
@@ -928,6 +927,112 @@ config.serializationConfig.portableFactories[1] = new PortableFactory();
 ```
 
 Note that the ID that is passed to the `SerializationConfig` is same as the `factoryId` that `Customer` object returns.
+
+
+### 4.2.1. Versioning for Portable Serialization
+
+More than one version of the same class may need to be serialized and deserialized. For example, a client may have an older version of a class and the member to which it is connected may have a newer version of the same class.
+
+Portable serialization supports versioning. It is a global versioning, meaning that all portable classes that are serialized through a member get the globally configured portable version.
+
+In NodeJs Client, you can achieve this by simply adding the `getClassIdd()` method to your class’s implementation of `Portable`, and setting the `ClassVersion` to be different than the default global version.
+
+Here is an example implementation of creating a version 2 for the above Foo class:
+
+```javascript
+function Foo(foo,foo2) {
+	this.foo=foo;
+	this.foo2=foo2;
+};
+
+Foo.prototype.getFactoryId = function () {
+    return 1;
+};
+
+Foo.prototype.getClassId = function () {
+    return 1;
+};
+
+Foo.prototype.getVersion = function () { //*
+    return 2;
+};
+
+Foo.prototype.readPortable = function (reader) {
+    this.foo = reader.readUTF('foo');
+	this.foo2 = reader.readUTF('foo2');
+
+};
+
+Foo.prototype.writePortable = function (writer) {
+    writer.writeUTF('foo', this.foo);
+	writer.writeUTF('foo2', this.foo2);
+};
+	
+	```
+
+> *This method is used in the form of `getVersion` for NodeJs while Java is  `getClassVersion` .
+
+Similar to `IdentifiedDataSerializable`, a `Portable` object must provide `classId` and `factoryId`. The factory object will be used to create the `Portable` object given the `classId`.
+
+A sample `PortableFactory2` could be implemented as follows:
+
+```javascript
+function PortableFactory2() {
+    // Constructor function
+}
+
+PortableFactory2.prototype.create = function (classId) {
+    if (classId === 2) {
+        return new Employee2();
+    }
+    return null;
+};
+```
+
+The last step is to register the `PortableFactory` to the `SerializationConfig`.
+
+**Programmatic Configuration:**
+
+```javascript
+var config2 = new Config2.ClientConfig();
+config2.serializationConfig.portableFactories[1] = new PortableFactory();
+```
+
+**Declarative Configuration:**
+
+```json
+{
+    "serialization": {
+        "portableFactories": [
+            {
+                "path": "factory.js",
+                "exportedName": "PortableFactory",
+                "factoryId": 1
+            }
+        ]
+    }
+}
+```
+
+Note that the ID that is passed to the `SerializationConfig` is same as the `factoryId` that `Employee2` object returns.
+
+You should consider the following when you perform versioning:
+- It is important to change the version whenever an update is performed in the serialized fields of a class, for example by incrementing the version.
+- If a client performs a Portable deserialization on a field and then that Portable is updated by removing that field on the cluster side, this may lead to a problem.
+- Portable serialization does not use reflection and hence, fields in the class and in the serialized content are not automatically mapped. Field renaming is a simpler process. Also, since the class ID is stored, renaming the Portable does not lead to problems.
+- Types of fields need to be updated carefully. Hazelcast performs basic type upgradings, such as `int` to `float`.
+
+#### Example Portable Versioning Scenarios:
+
+Assume that a new client joins to the cluster with a class that has been modified and class's version has been upgraded due to this modification.
+
+If you modified the class by adding a new field, the new client’s put operations include that new field. If this new client tries to get an object that was put from the older clients, it gets null for the newly added field.
+
+If you modified the class by removing a field, the old clients get null for the objects that are put by the new client.
+
+If you modified the class by changing the type of a field to an incompatible type (such as from `int` to `String`), a `TypeError` is generated as the client tries accessing an object with the older version of the class. The same applies if a client with the old version tries to access a new version object.
+
+If you did not modify a class at all, it works as usual.
 
 ## 4.3. Custom Serialization
 

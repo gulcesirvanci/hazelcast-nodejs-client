@@ -104,7 +104,7 @@ class ClientMessage {
     }
 
     getFlags(): number {
-        return this.buffer.readUInt8(BitsUtil.FLAGS_FIELD_OFFSET);
+        return this.buffer.readUInt8(BitsUtil.FLAGS_FIELD_OFFSET) ;
     }
 
     setFlags(value: number): void {

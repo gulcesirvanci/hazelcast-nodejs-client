@@ -15,29 +15,30 @@
  */
 
 var Client = require('hazelcast-client').Client;
-// Start the Hazelcast Client and connect to an already running Hazelcast Cluster on 127.0.0.1
-Client.newHazelcastClient().then(function (hz) {
-    var list;
-    // Get the Distributed List from Cluster.
-    hz.getList('my-distributed-list').then(function (l) {
-        list = l;
-        // Add elements to the list
-        return list.add('item1');
+
+Client.newHazelcastClient().then(function (hazelcastClient) {
+    var client = hazelcastClient;
+    var map;
+    hazelcastClient.getMap('my-distributed-map').then(function (mp) {
+        map = mp;
+        return map.put('key', 'value');
     }).then(function () {
-        return list.add('item2');
+        return map.get('key');
+    }).then(function (val) {
+        console.log(val);
+        return map.remove('key');
     }).then(function () {
-        //Remove the first element
-        return list.removeAt(0);
+        return map.put('disappearing-key', 'this string will disappear after ttl', 1000);
+    }).then(function (value) {
+        return map.get('disappearing-key');
     }).then(function (value) {
         console.log(value);
-        // There is only one element left
-        return list.size();
-    }).then(function (len) {
-        console.log(len);
-        // Clear the list
-        return list.clear();
-    }).then(function () {
-        // Shutdown this Hazelcast client
-        hz.shutdown();
+
+        setTimeout(function () {
+            map.get('disappearing-key').then(function (value) {
+                console.log(value);
+                return client.shutdown();
+            });
+        }, 1000)
     });
 });
