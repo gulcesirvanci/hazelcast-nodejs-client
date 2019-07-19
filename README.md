@@ -935,6 +935,10 @@ More than one version of the same class may need to be serialized and deserializ
 
 Portable serialization supports versioning. It is a global versioning, meaning that all portable classes that are serialized through a member get the globally configured portable version.
 
+<<<<<<< Updated upstream
+=======
+If you update the class by changing the type of one of the fields or by adding a new field, it is a good idea to upgrade the version of the class, rather than sticking to the global version specified in the `hazelcast-client.jsonq` file.
+>>>>>>> Stashed changes
 In NodeJs Client, you can achieve this by simply adding the `getClassIdd()` method to your class’s implementation of `Portable`, and setting the `ClassVersion` to be different than the default global version.
 
 Here is an example implementation of creating a version 2 for the above Foo class:

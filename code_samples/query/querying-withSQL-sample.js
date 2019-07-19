@@ -17,51 +17,34 @@
 var Client = require('hazelcast-client').Client;
 var Predicates = require('hazelcast-client').Predicates;
 
+function Customer(name, active, age) {
+    this.active = active;
+    this.age = age;
+    this.name = name;
+};
+
 Client.newHazelcastClient().then(function (hazelcastClient) {
     var client = hazelcastClient;
     var personMap;
-    client.getMap('persons').then(function (mp) {
+    client.getMap('personMap').then(function (mp) {
         personMap = mp;
-        return personMap.put('Alice', 35);
+        return personMap.putAll([
+            ['1', new Customer('Peter', true, 36)],
+            ['2', new Customer('John', false, 40)],
+            ['3', new Customer('Roger', true, 20)],
+            ['4', new Customer('Jane', true, 27)],
+            ['5', new Customer('Mary', false, 22)],
+            ['6', new Customer('Ragnar', true, 30)],
+            ['7', new Customer('Hilary', true, 19)],
+        ]);
     }).then(function () {
-        return personMap.put('Andy', 37);
-    }).then(function () {
-        return personMap.put('Bob', 22);
-    }).then(function () {
-        var predicate = new Predicates.sql('__key like A%');
+        const predicate = new Predicates.sql('active AND age < 30');
         return personMap.valuesWithPredicate(predicate);
-    }).then(function (startingWithA) {
-        console.log(startingWithA.get(0)); // 35
-        return client.shutdown();
+    }).then(function (values) {
+        values.toArray().forEach(function (value) {
+            console.log(value);
+            return client.shutdown();
+        });
     });
-
 });
 
-
-/*
-
-
-In this example, the code creates a list with the values whose keys start with the letter "A”.
-
-You can use the this attribute to perform a predicated search for entry values. See the following example:
-
-var personMap;
-return client.getMap('persons').then(function (mp) {
-    personMap = mp;
-    return personMap.put('Alice', 35);
-}).then(function () {
-    return personMap.put('Andy', 37);
-}).then(function () {
-    return personMap.put('Bob', 22);
-}).then(function () {
-    var predicate = new Predicates.greaterEqual('this', 27);
-    return personMap.valuesWithPredicate(predicate);
-}).then(function (olderThan27) {
-    console.log(olderThan27.get(0), olderThan27.get(1)); // 35 37
-});
-In this example, the code creates a list with the values greater than or equal to "27".
-
-
-
-
- */
